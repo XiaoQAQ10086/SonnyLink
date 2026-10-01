@@ -1,0 +1,26 @@
+# ---- Gradle / 构建产物 ----
+.gradle/
+build/
+*/build/
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# ---- 本地配置（不要提交）----
+local.properties
+keystore.properties
+keystore/
+*.jks
+*.keystore
+
+# ---- IDE ----
+.idea/
+*.iml
+.DS_Store
+
+# ---- 本地临时文件 ----
+setup/
+probe/
+dist/
+*.log

@@ -1,0 +1,4 @@
+<resources>
+    <!-- 应用名。想换名字只改这一行即可（launcher 标签取自这里）。 -->
+    <string name="app_name">SonnyLink</string>
+</resources>
