@@ -94,15 +94,8 @@ fun WifiConnectSection(
         // 不是相机时，额外给一个「重新检测」入口
         if (!wifi.looksLikeCamera) {
             Spacer(Modifier.height(10.dp))
-            Text(
-                "已在系统设置里连好相机热点？点这里重新检测",
-                color = Accent,
-                fontSize = 11.sp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onRetry() }
-                    .padding(vertical = 6.dp),
-            )
+            SecondaryButton("已在系统设置里连好相机热点 · 点此重新检测") { onRetry() }
+            Spacer(Modifier.height(10.dp))
             Text(
                 "相机的热点名形如 DIRECT-xxxx:CameraModel。\n" +
                     "系统会提示「无法访问互联网」—— 这是正常的，相机热点本来就不提供上网。",

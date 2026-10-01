@@ -47,7 +47,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -121,9 +120,10 @@ private fun ConnectScreen(vm: CameraViewModel, onBack: () -> Unit) {
     val status by vm.status.collectAsState()
     val busy by vm.busy.collectAsState()
     val log by vm.log.collectAsState()
-    val dlna by vm.dlnaReport.collectAsState()
     val ctx = LocalContext.current
     val wifi by vm.wifiState.collectAsState()
+    var logOpen by remember { mutableStateOf(false) }
+    var diag by remember { mutableStateOf("") }
     var ssid by remember { mutableStateOf(vm.savedSsid) }
     var pass by remember { mutableStateOf(vm.savedPass) }
     var advanced by remember { mutableStateOf(false) }
@@ -165,11 +165,9 @@ private fun ConnectScreen(vm: CameraViewModel, onBack: () -> Unit) {
         Spacer(Modifier.height(20.dp))
 
         // ——— 备用：手动输入 SSID / 密码 ———
-        Text(
+        SecondaryButton(
             if (advanced) "收起手动连接" else "手动输入 SSID / 密码（备用）",
-            color = Accent, fontSize = 11.sp,
-            modifier = Modifier.clickable { advanced = !advanced },
-        )
+        ) { advanced = !advanced }
         if (advanced) {
             Spacer(Modifier.height(10.dp))
             OutlinedTextField(
@@ -197,15 +195,6 @@ private fun ConnectScreen(vm: CameraViewModel, onBack: () -> Unit) {
             ) {
                 Text("用 SSID / 密码连接", fontSize = 14.sp)
             }
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = { vm.runDlnaProbe(ssid.trim(), pass.trim()) },
-                enabled = !busy && ssid.isNotBlank(),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth().height(42.dp),
-            ) {
-                Text("相册可行性探测", fontSize = 12.sp)
-            }
         }
 
         if (status.startsWith("连接失败") || status.contains("找不到")) {
@@ -220,25 +209,15 @@ private fun ConnectScreen(vm: CameraViewModel, onBack: () -> Unit) {
             }
         }
 
-        if (dlna.isNotEmpty()) {
-            Spacer(Modifier.height(14.dp))
-            Column(
-                Modifier.fillMaxWidth().heightIn(max = 320.dp).clip(RoundedCornerShape(12.dp))
-                    .background(Ink1).padding(12.dp).verticalScroll(rememberScrollState()),
-            ) {
-                Text(dlna, fontSize = 9.sp, fontFamily = FontFamily.Monospace, color = TextMid)
-            }
+        Spacer(Modifier.height(14.dp))
+        SecondaryButton("查看诊断日志") {
+            diag = vm.buildDiag()
+            logOpen = true
         }
+    }
 
-        if (log.isNotEmpty()) {
-            Spacer(Modifier.height(14.dp))
-            Column(
-                Modifier.fillMaxWidth().heightIn(max = 200.dp).clip(RoundedCornerShape(12.dp))
-                    .background(Ink1).padding(12.dp).verticalScroll(rememberScrollState()),
-            ) {
-                Text(log, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = TextMid)
-            }
-        }
+    if (logOpen) {
+        LogPanel(diag) { logOpen = false }
     }
 }
 
@@ -257,18 +236,17 @@ private fun LiveviewScreen(vm: CameraViewModel) {
     val camInfo by vm.camInfo.collectAsState()
     val scaleMode by vm.scaleMode.collectAsState()
     val sharpen by vm.sharpen.collectAsState()
-    val probeReport by vm.probeReport.collectAsState()
-    val probeBusy by vm.probeBusy.collectAsState()
+    // 诊断报告在打开面板那一刻生成（含设备信息 + 连接日志）
+    var diag by remember { mutableStateOf("") }
 
     // 极简为默认：常驻只有 取景画面 + 快门 + 相机参数。
-    // 「取景中」状态、fps 统计、断开、实验、日志 都收进 showExtras，点一下画面才出现。
+    // 「取景中」状态、fps 统计、断开、诊断日志 都收进 showExtras，点一下画面才出现。
     // 竖屏时取景画面是中间一条，左右缘放按钮必然压在画面上 —— 挪到底部黑区
     val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
     var showExtras by remember { mutableStateOf(false) }
     var tick by remember { mutableIntStateOf(0) }
     var logOpen by remember { mutableStateOf(false) }
     var photoOpen by remember { mutableStateOf(false) }
-    var probeOpen by remember { mutableStateOf(false) }
 
     // 控件常驻：快门与 f/ISO 信息需始终可见。
     // 想看纯净画面时点一下画面手动隐藏，再点恢复。
@@ -546,8 +524,11 @@ private fun LiveviewScreen(vm: CameraViewModel) {
                     ) {
                         if (showExtras) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                IconButtonBox("实验") { probeOpen = true; tick++ }
-                                IconButtonBox("日志") { logOpen = !logOpen; tick++ }
+                                IconButtonBox("日志") {
+                                    diag = vm.buildDiag()
+                                    logOpen = true
+                                    tick++
+                                }
                             }
                         }
                     }
@@ -555,92 +536,9 @@ private fun LiveviewScreen(vm: CameraViewModel) {
             }
         }
 
-        // ---------- 日志面板 ----------
+        // ---------- 诊断日志面板 ----------
         if (logOpen) {
-            Box(
-                Modifier.fillMaxSize().background(Color(0xE6000000)).clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                ) { logOpen = false }
-            ) {
-                Column(
-                    Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                        .heightIn(max = 420.dp)
-                        .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
-                        .background(Ink1)
-                        .safeDrawingPadding()
-                        .padding(16.dp)
-                        .verticalScroll(rememberScrollState()),
-                ) {
-                    Text("连接日志", color = TextHi, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        if (log.isEmpty()) "（暂无）" else log,
-                        color = TextMid,
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
-            }
-        }
-
-        // ---------- 实验面板 ----------
-        if (probeOpen) {
-            Box(
-                Modifier.fillMaxSize().background(Color(0xE6000000)).clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                ) { probeOpen = false }
-            ) {
-                Column(
-                    Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                        .heightIn(max = 520.dp)
-                        .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
-                        .background(Ink1)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) { }
-                        .safeDrawingPadding()
-                        .padding(16.dp),
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("实验功能", color = TextHi, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                        Text("关闭", color = TextMid, fontSize = 12.sp,
-                            modifier = Modifier.clickable { probeOpen = false })
-                    }
-
-                    Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        SmallButton(if (probeBusy) "运行中…" else "运行探测", !probeBusy) { vm.runProbe() }
-                        SmallButton("影片模式", !probeBusy) { vm.switchShootMode("movie") }
-                        SmallButton("拍照模式", !probeBusy) { vm.switchShootMode("still") }
-                        SmallButton("渲染诊断", true) { vm.dumpRenderDiag() }
-                    }
-
-                    Spacer(Modifier.height(10.dp))
-                    Column(
-                        Modifier.fillMaxWidth().weight(1f, fill = false)
-                            .verticalScroll(rememberScrollState()),
-                    ) {
-                        Text(
-                            probeReport.ifEmpty {
-                                "点「运行探测」：会依次尝试\n" +
-                                    "  · postview 全尺寸（能否回传原图）\n" +
-                                    "  · 触摸对焦（P4 前置验证）\n" +
-                                    "  · 影片模式（取景规格是否不同）"
-                            },
-                            color = if (probeReport.isEmpty()) TextMid else TextHi,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
-                        )
-                    }
-                }
-            }
+            LogPanel(diag) { logOpen = false }
         }
 
         // ---------- 全屏看图 ----------

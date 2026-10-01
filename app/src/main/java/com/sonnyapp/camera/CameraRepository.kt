@@ -47,32 +47,8 @@ class CameraRepository(private val context: Context) {
 
     fun logText(): String = synchronized(log) { log.toString() }
 
-    /**
-     * 只连相机热点、**不做 ScalarWebAPI 握手**，然后跑 DLNA 探测。
-     *
-     * 单独一条路的原因：相机在「发送到智能手机」模式下**不提供遥控 API**
-     * （那套只有 guide/accessControl/camera，没有 avContent）。
-     * 如果走 connect() 会在版本闸门那步失败，而我们要的是另一个协议。
-     */
     /** 当前 Wi-Fi 状态（判断用户连的是不是相机）。 */
     fun wifiState(): WifiState = net.wifiState()
-
-    suspend fun runDlnaProbe(ssid: String, passphrase: String?): String =
-        withContext(Dispatchers.IO) {
-            synchronized(log) { log.setLength(0) }
-            note("[DLNA] 连接热点 " + ssid)
-            try {
-                val n = net.connect(ssid, passphrase)
-                note("      已连接，Network = " + n)
-                net.acquireMulticastLock()
-                val report = DlnaProbe(n).run()
-                note("      探测完成")
-                report
-            } catch (e: Exception) {
-                note("      连接失败: " + (e.message ?: ""))
-                "连接相机热点失败：" + (e.message ?: e.toString())
-            }
-        }
 
     /**
      * 完整连接流程：连热点 -> SSDP -> DD.xml -> 建 API -> 版本闸门 -> 进遥控模式。
@@ -255,103 +231,6 @@ class CameraRepository(private val context: Context) {
         return if (j > i) ev.substring(i, j + 1) else ev.substring(i)
     }
 
-    /**
-     * 一次性探测这台相机还能榨出什么，返回可直接显示的文本。
-     * 全程用 callForce 绕过能力门禁 —— 目的是看"到底行不行"，不是走正常功能。
-     */
-    suspend fun probe(): String = withContext(Dispatchers.IO) {
-        val a = api ?: return@withContext "未连接相机"
-        val sb = StringBuilder()
-        fun line(s: String) { sb.append(s).append('\n') }
-        fun attempt(label: String, method: String, params: List<Any?>) {
-            try {
-                line(describeResponse(label, a.callForce(method, params)))
-            } catch (e: Exception) {
-                line("  " + label + " -> 异常 " + (e.message ?: e.toString()))
-            }
-        }
-
-        line("[0] 完整可用方法列表")
-        try {
-            val list = a.getAvailableApiList().sorted()
-            line("  共 " + list.size + " 个:")
-            for (m in list) line("    " + m)
-        } catch (e: Exception) {
-            line("  失败: " + e.message)
-        }
-        line("[0b] 完整 getEvent 原始 JSON")
-        try {
-            line(a.getEvent(false))
-        } catch (e: Exception) {
-            line("  失败: " + e.message)
-        }
-
-        line("[1] 能力")
-        line("  可用 " + a.capabilities.available.size + " / 固件 " + a.capabilities.supported.size)
-        line("  有 StillQuality? " + a.capabilities.supportsEver("setStillQuality") +
-            "   有 setTouchAFPosition? " + a.capabilities.supportsEver("setTouchAFPosition") +
-            "   有 setFocusArea? " + a.capabilities.supportsEver("setFocusArea"))
-
-        line("[2] 相机事件关键字段")
-        try {
-            val ev = a.getEvent(false)
-            for (k in listOf("shootMode", "postviewImageSize", "focusMode", "touchAFPosition", "exposureMode", "fNumber", "isoSpeedRate", "liveviewStatus")) {
-                val v = eventField(ev, k)
-                if (v != null) line("  " + v.take(140))
-            }
-        } catch (e: Exception) {
-            line("  getEvent 失败: " + e.message)
-        }
-
-        line("[3] postview 尺寸（能否回传全尺寸 JPEG）")
-        attempt("setPostviewImageSize [Original]", "setPostviewImageSize", listOf("Original"))
-        attempt("getPostviewImageSize", "getPostviewImageSize", emptyList())
-        attempt("setPostviewImageSize [2M]", "setPostviewImageSize", listOf("2M"))
-
-        line("[4] 触摸对焦 —— 重点：对焦区域设为「自由点」后会不会开放")
-        attempt("getSupportedFocusMode", "getSupportedFocusMode", emptyList())
-        attempt("getFocusMode", "getFocusMode", emptyList())
-        attempt("getAvailableFocusMode", "getAvailableFocusMode", emptyList())
-        attempt("setFocusMode [AF-C]", "setFocusMode", listOf("AF-C"))
-        attempt("setFocusMode [AF-S]", "setFocusMode", listOf("AF-S"))
-        attempt("setFocusMode [DMF]", "setFocusMode", listOf("DMF"))
-        attempt("setTouchAFPosition [320,212]", "setTouchAFPosition", listOf(320.0, 212.0))
-        attempt("setTouchAFPosition [50,50]", "setTouchAFPosition", listOf(50.0, 50.0))
-        attempt("setTouchAFPosition [5000,5000]", "setTouchAFPosition", listOf(5000.0, 5000.0))
-        attempt("getTouchAFPosition", "getTouchAFPosition", emptyList())
-        attempt("cancelTouchAFPosition", "cancelTouchAFPosition", emptyList())
-        line("  切换后可触焦? 见上方 setTouchAFPosition 的返回")
-
-        line("[5] 拍摄模式（关键：影片模式取景规格是否不同）")
-        attempt("setShootMode [movie]", "setShootMode", listOf("movie"))
-        try {
-            val after = a.getAvailableApiList()
-            line("  切换后可用方法 " + after.size + " 个")
-            line("  startMovieRec 可用? " + after.contains("startMovieRec") +
-                "   actTakePicture 可用? " + after.contains("actTakePicture"))
-            a.refreshCapabilities()
-        } catch (e: Exception) {
-            line("  查询失败: " + e.message)
-        }
-        line("  （探测结束 —— 取景将自动重启并报告新规格）")
-
-        sb.toString()
-    }
-
-    /** 切换拍摄模式（不改回），并刷新能力集。 */
-    suspend fun setShootModeRaw(mode: String): String = withContext(Dispatchers.IO) {
-        val a = api ?: return@withContext "未连接相机"
-        try {
-            val r = a.callForce("setShootMode", listOf(mode))
-            a.refreshCapabilities()
-            val desc = describeResponse("setShootMode [" + mode + "]", r).trim()
-            desc + "\n可用方法 " + a.capabilities.available.size + " 个，" +
-                (if (mode == "movie") "请断开重连以应用。" else "已切回拍照模式。")
-        } catch (e: Exception) {
-            "异常: " + (e.message ?: e.toString())
-        }
-    }
-
     /** 把响应压成一行：有 error 就只回错误部分。 */
     private fun shortResp(r: String): String {
         val marker = "" + DQ + "error" + DQ + ":["
@@ -363,37 +242,13 @@ class CameraRepository(private val context: Context) {
         return "OK " + r.take(70)
     }
 
-    /**
-     * **在取景运行中**直接试对焦相关方法。
-     *
-     * 单独实现的原因：探测若先停止取景会造成画面中断，
-     * 结果把"只在取景期间开放"的方法全误判成不可用
-     * （setExposureCompensation 就是这么被误判的）。
-     */
-    suspend fun probeFocusLive(): String = withContext(Dispatchers.IO) {
-        val a = api ?: return@withContext "未连接"
-        val sb = StringBuilder()
-        fun t(label: String, method: String, params: List<Any?>) {
-            val r = try {
-                shortResp(a.callForce(method, params))
-            } catch (e: Exception) {
-                "异常 " + (e.message ?: "")
-            }
-            sb.append("  ").append(label).append(" -> ").append(r).append('\n')
+    suspend fun setSelfTimer(seconds: Int): Boolean = withContext(Dispatchers.IO) {
+        try {
+            api?.setSelfTimer(seconds) ?: false
+        } catch (e: Exception) {
+            false
         }
-        t("getFocusMode", "getFocusMode", emptyList())
-        t("getSupportedFocusMode", "getSupportedFocusMode", emptyList())
-        t("setFocusMode[AF-C]", "setFocusMode", listOf("AF-C"))
-        t("setFocusMode[AF-S]", "setFocusMode", listOf("AF-S"))
-        t("setTouchAFPosition[320,212]", "setTouchAFPosition", listOf(320.0, 212.0))
-        t("setTouchAFPosition[50,50]", "setTouchAFPosition", listOf(50.0, 50.0))
-        t("setTouchAFPosition[5000,5000]", "setTouchAFPosition", listOf(5000.0, 5000.0))
-        t("getTouchAFPosition", "getTouchAFPosition", emptyList())
-        t("cancelTouchAFPosition", "cancelTouchAFPosition", emptyList())
-        sb.toString()
     }
-
-    // ------------------------------------------------------- 参数读写（能力驱动）
 
     suspend fun readCameraEvent(): CameraEvent? = withContext(Dispatchers.IO) {
         try {
@@ -409,68 +264,6 @@ class CameraRepository(private val context: Context) {
         } catch (e: Exception) {
             false
         }
-    }
-
-    suspend fun setSelfTimer(seconds: Int): Boolean = withContext(Dispatchers.IO) {
-        try {
-            api?.setSelfTimer(seconds) ?: false
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    /**
-     * 参数写入的**原始**探测：直接看相机到底回什么错。
-     *
-     * 为什么要这个：normalize 之后的 true/false 分不清是
-     * "不在可用列表" / "参数非法" / "相机内部拒绝" —— 这三种修法完全不同。
-     */
-    suspend fun probeParams(): String = withContext(Dispatchers.IO) {
-        val a = api ?: return@withContext "未连接"
-        val sb = StringBuilder()
-        sb.append("capabilities.can(setExposureCompensation) = ")
-            .append(a.capabilities.can("setExposureCompensation")).append('\n')
-        sb.append("capabilities.can(setSelfTimer) = ")
-            .append(a.capabilities.can("setSelfTimer")).append('\n')
-        sb.append("capabilities 可用方法数 = ").append(a.capabilities.available.size).append('\n')
-        // 非破坏性：只用当前值试写，不会改变画面或设置。
-        // 不要用其它数值试写来"探测可写性"，那样会覆盖已有设置。
-        // 结果是周期性覆盖已有设置。
-        val evBlock = eventField(a.getEvent(false), "exposureCompensation")
-        val curEv = evBlock?.let { b ->
-            val i = b.indexOf("\"currentExposureCompensation\":")
-            if (i < 0) null else b.substring(i + 28).takeWhile { it.isDigit() || it == '-' }.toIntOrNull()
-        } ?: 0
-        // 试写一个不同的值，再还原 —— 只有"真的改一下"才能证明可写。
-        // 只用当前值试写的话，即使相机忽略这个参数也会返回 OK，证明不了什么。
-        val probeEv = if (curEv == 0) 1 else 0
-        val r = try {
-            a.callForce("setExposureCompensation", listOf(probeEv))
-        } catch (e: Exception) {
-            "异常 " + (e.message ?: "")
-        }
-        sb.append("setExposureCompensation[").append(probeEv)
-            .append("]（试写） -> ").append(shortResp(r)).append('\n')
-        val restored = try {
-            a.callForce("setExposureCompensation", listOf(curEv))
-        } catch (e: Exception) {
-            "异常 " + (e.message ?: "")
-        }
-        sb.append("  还原为[").append(curEv).append("] -> ").append(shortResp(restored)).append('\n')
-
-        val timerBlock = eventField(a.getEvent(false), "selfTimer")
-        val curTimer = timerBlock?.let { b ->
-            val i = b.indexOf("\"currentSelfTimer\":")
-            if (i < 0) null else b.substring(i + 19).takeWhile { it.isDigit() || it == '-' }.toIntOrNull()
-        } ?: 0
-        val r2 = try {
-            a.callForce("setSelfTimer", listOf(curTimer))
-        } catch (e: Exception) {
-            "异常 " + (e.message ?: "")
-        }
-        sb.append("setSelfTimer[").append(curTimer)
-            .append("]（当前值，无副作用） -> ").append(shortResp(r2)).append('\n')
-        sb.toString()
     }
 
     suspend fun actZoom(direction: String, movement: String): Boolean = withContext(Dispatchers.IO) {

@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonnyapp.camera.CameraRepository
+import com.sonnyapp.diag.Diagnostics
 import com.sonnyapp.liveview.LiveviewEngine
 import com.sonnyapp.liveview.LiveviewRenderer
 import com.sonnyapp.liveview.LiveviewScaleMode
@@ -140,14 +141,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     val sharpen: StateFlow<SharpenLevel> = _sharpen.asStateFlow()
     private val _camInfo = MutableStateFlow(CameraInfo())
     val camInfo: StateFlow<CameraInfo> = _camInfo.asStateFlow()
-    private val _dlnaReport = MutableStateFlow("")
-    val dlnaReport: StateFlow<String> = _dlnaReport.asStateFlow()
-    private val _probeReport = MutableStateFlow("")
-    val probeReport: StateFlow<String> = _probeReport.asStateFlow()
-    private val _probeBusy = MutableStateFlow(false)
-    val probeBusy: StateFlow<Boolean> = _probeBusy.asStateFlow()
 
-    val savedSsid: String get() = prefs.getString(KEY_SSID, "DIRECT-p2E0:ILCE-6300") ?: ""
+    val savedSsid: String get() = prefs.getString(KEY_SSID, "") ?: ""
     val savedPass: String get() = prefs.getString(KEY_PASS, "") ?: ""
 
     init {
@@ -287,16 +282,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         statsJob = viewModelScope.launch {
             while (isActive) {
                 tick++
-                // 每 10 秒采一次"取景运行中的可用方法集"（只读，安全）。
-                //
-                // 注意：不要在此处调用 probeFocusLive / probeParams。
-                // probeParams 会往相机写 EV 和定时自拍来"测能不能写" —— 结果每 10 秒
-                // 会覆盖刚写入的值，表现为设置过几秒后自动回滚。
-                // **会写状态的探测绝不能放进周期任务。** 它已改为手动、且非破坏性。
+                // 每 10 秒采一次「取景运行中的可用方法集」（只读）。
+                // 周期任务绝不写入相机状态：写操作会覆盖用户刚设的值。
                 if (tick % 20 == 1) {
                     liveApiList = repo.availableMethods()
                 }
-                if (tick % 4 == 1) writeRenderDiag()
                 _stats.value = CameraStats(
                     fps = e.fps,
                     jpegBytes = e.jpegBytes,
@@ -449,177 +439,52 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ------------------------------------------------------------ 实验探测
-
-    /** 报告既显示在面板里，也落盘 —— 方便用 adb 拉取全文（截图读不全）。 */
-    private fun setReport(text: String) {
-        _probeReport.value = text
-        try {
-            val dir = getApplication<Application>().getExternalFilesDir(null)
-            if (dir != null) {
-                java.io.File(dir, "probe.txt").writeText(text)
-            }
-        } catch (e: Exception) {
-            // 仅调试用途，失败不影响功能
-        }
-    }
-
     /**
-     * 暂停取景 -> 执行动作 -> 重启取景 -> 把新的取景规格写进报告。
-     *
-     * 为什么必须先停：setShootMode 之类会改相机内部状态，
-     * 正在运行的取景流会被打断，必须先停止。
-     * 现在停掉、做完、自动重启，并报告新规格。
+     * 取景运行中相机允许调用的方法集，每 10 秒刷新一次。
+     * 只在状态变化时更新，供 CameraInfo 判断变焦/定时自拍是否可用。
      */
-    private suspend fun probeAround(action: suspend () -> String) {
-        statsJob?.cancel()
-        engine?.stop()
-        engine = null
-        _stats.value = CameraStats()
-        _status.value = "探测中（已暂停取景）"
-
-        var report = try {
-            action()
-        } catch (e: Exception) {
-            "执行失败：" + (e.message ?: e.toString())
-        }
-
-        // 重启取景，并测量新规格
-        val nl = 10.toChar().toString()
-        var newSpec = ""
-        try {
-            val url = repo.startLiveview()
-            val net = repo.network ?: throw IllegalStateException("相机网络已断开")
-            val e = LiveviewEngine(net, renderer)
-            engine = e
-            e.start(viewModelScope, url)
-            startStatsTicker(e)
-            startStatusTicker()
-            RefreshRate.setLowPower(true)
-            _status.value = "取景中"
-            delay(1800)
-            newSpec = if (e.width > 0) {
-                nl + "重启后取景规格: " + e.width + "x" + e.height +
-                    "   " + String.format("%.1f", e.fps) + " fps"
-            } else {
-                nl + "重启后未收到画面（超时）"
-            }
-        } catch (e: Exception) {
-            _status.value = "取景重启失败，请断开重连"
-            newSpec = nl + "取景重启失败: " + (e.message ?: "")
-        }
-        setReport(report + newSpec)
-    }
-
-    /** 一次性探测相机还能榨出什么（postview 全尺寸 / 触摸对焦 / 影片模式）。 */
-    fun runProbe() {
-        if (_probeBusy.value) return
-        viewModelScope.launch {
-            _probeBusy.value = true
-            setReport("探测中…（会依次试十几个方法，约 10 秒）")
-            try {
-                probeAround { repo.probe() }
-            } finally {
-                _probeBusy.value = false
-            }
-        }
-    }
-
-    /** 切换拍摄模式，并自动重启取景以应用新规格。 */
-    fun switchShootMode(mode: String) {
-        if (_probeBusy.value) return
-        viewModelScope.launch {
-            _probeBusy.value = true
-            setReport("切换中…")
-            try {
-                probeAround { repo.setShootModeRaw(mode) }
-            } finally {
-                _probeBusy.value = false
-            }
-        }
-    }
-
-    /**
-     * 相册可行性探测：连相机热点（不做遥控握手）后跑 DLNA。
-     *
-     * 用途：相机在「发送到智能手机」模式下会变成 UPnP 媒体服务器，
-     * 这个探测会 SSDP 扫描 + 抓设备描述 + 真的发一次 ContentDirectory Browse。
-     * **能列出文件名，相册功能就成立。**
-     */
-    fun runDlnaProbe(ssid: String, pass: String) {
-        if (_busy.value) return
-        viewModelScope.launch {
-            _busy.value = true
-            _status.value = "相册探测中…（相机需停留在「发送到智能手机」界面）"
-            _dlnaReport.value = "探测中…（SSDP 扫描约 15 秒）"
-            try {
-                val rep = repo.runDlnaProbe(ssid, pass.ifEmpty { null })
-                _dlnaReport.value = rep
-                writeDebugFile("dlna.txt", rep)
-                _status.value = "相册探测完成 —— 报告见下方"
-            } catch (e: Exception) {
-                val msg = "探测失败：" + (e.message ?: e.toString())
-                _dlnaReport.value = msg
-                writeDebugFile("dlna.txt", msg)
-                _status.value = "相册探测失败"
-            } finally {
-                _busy.value = false
-            }
-        }
-    }
-
-    /** 调试文件落盘（logcat 被 MIUI 屏蔽，只能靠文件回传）。 */
-    private fun writeDebugFile(name: String, text: String) {
-        try {
-            val dir = getApplication<Application>().getExternalFilesDir(null) ?: return
-            java.io.File(dir, name).writeText(text)
-        } catch (e: Exception) {
-            // 仅调试用途
-        }
-    }
-
-    /** 把 GL 渲染自检信息写进报告文件，供 adb 拉取。 */
-    fun dumpRenderDiag() {
-        setReport(renderer.diagnostics())
-    }
-
-    /** 渲染诊断写到独立文件（不覆盖 probe.txt），供 adb 随时拉取。 */
     @Volatile
     private var liveApiList: List<String> = emptyList()
 
-    @Volatile
-    private var liveFocusReport: String = "(尚未采集)"
+    // ------------------------------------------------------------ 诊断
 
-    @Volatile
-    private var paramProbeReport: String = "(尚未采集)"
-
-    private fun writeRenderDiag() {
-        try {
-            val dir = getApplication<Application>().getExternalFilesDir(null) ?: return
-            val sb = StringBuilder()
-            sb.append("取景运行中可用方法(").append(liveApiList.size).append(" 个):\n")
-            if (liveApiList.isEmpty()) {
-                sb.append("  (尚未采集)\n")
-            } else {
-                for (m in liveApiList.sorted()) sb.append("  ").append(m).append('\n')
-            }
-            sb.append('\n')
-            sb.append("最近参数写入: ").append(lastWriteResult).append('\n')
-            sb.append("曝光模式: ").append(_camInfo.value.exposureMode)
-                .append("  可写EV: ").append(_camInfo.value.canSetEv)
-                .append("  可写定时: ").append(_camInfo.value.canSelfTimer).append('\n')
-            sb.append('\n')
-            sb.append("参数写入原始探测:\n")
-            sb.append(paramProbeReport).append('\n')
-            sb.append('\n')
-            sb.append("取景运行中对焦探测:\n")
-            sb.append(liveFocusReport).append('\n')
-            sb.append('\n')
-            sb.append(renderer.diagnostics())
-            java.io.File(dir, "render.txt").writeText(sb.toString())
+    /**
+     * 生成诊断报告。
+     *
+     * 用户的机型、Android 版本、相机固件各不相同，报告必须包含完整环境信息，
+     * 否则只凭「连不上」无法定位问题。用户可在日志面板一键复制后发出。
+     */
+    fun buildDiag(): String {
+        val s = _stats.value
+        val c = _camInfo.value
+        val w = _wifi.value
+        val extras = listOf(
+            "状态" to _status.value,
+            "连接" to if (_connected.value) "已连接" else "未连接",
+            "Wi-Fi SSID" to (w.ssid ?: if (w.connected) "(系统未提供)" else "(未连接)"),
+            "判为相机热点" to if (w.looksLikeCamera) "是" else "否",
+            "取景规格" to if (s.width > 0) (s.width.toString() + "x" + s.height) else "(未出图)",
+            "帧率" to (String.format("%.1f", s.fps) + " fps"),
+            "帧尺寸" to (s.jpegBytes / 1024).toString() + " KB",
+            "解码耗时" to s.decodeMs.toString() + " ms",
+            "绘制耗时" to s.drawMs.toString() + " ms",
+            "跳帧" to s.skipped.toString(),
+            "曝光模式" to c.exposureMode,
+            "可写 EV" to (c.canSetEv.toString() + "  (范围 " + c.evMin + " .. " + c.evMax + ")"),
+            "可写定时自拍" to c.canSelfTimer.toString(),
+            "最近参数写入" to lastWriteResult,
+        )
+        // 渲染器自检（GL 版本、着色器编译结果、帧统计）也一并附上
+        val render = try {
+            renderer.diagnostics()
         } catch (e: Exception) {
-            // 仅调试用途
+            "(渲染器未就绪)"
         }
+        return Diagnostics.build(
+            getApplication<Application>(),
+            repo.logText() + "\n--- 渲染自检 ---\n" + render,
+            extras,
+        )
     }
 
     fun disconnect() {

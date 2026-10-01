@@ -124,11 +124,9 @@ private fun GalleryConnect(vm: GalleryViewModel, onBack: () -> Unit) {
         )
 
         Spacer(Modifier.height(18.dp))
-        Text(
+        SecondaryButton(
             if (advanced) "收起手动连接" else "手动输入 SSID / 密码（备用）",
-            color = Accent, fontSize = 11.sp,
-            modifier = Modifier.clickable { advanced = !advanced },
-        )
+        ) { advanced = !advanced }
         if (advanced) {
             Spacer(Modifier.height(10.dp))
             OutlinedTextField(
@@ -181,6 +179,8 @@ private fun GalleryBrowse(vm: GalleryViewModel, onBack: () -> Unit) {
     val tasks by vm.tasks.collectAsState()
     val saveUri by vm.saveTreeUri.collectAsState()
     val conc by vm.concurrency.collectAsState()
+    var logOpen by remember { mutableStateOf(false) }
+    var diag by remember { mutableStateOf("") }
 
     var showTasks by remember { mutableStateOf(false) }
     LaunchedEffect(tasks.isNotEmpty()) { if (tasks.isNotEmpty()) showTasks = true }
@@ -223,6 +223,11 @@ private fun GalleryBrowse(vm: GalleryViewModel, onBack: () -> Unit) {
                     Text(status, color = TextMid, fontSize = 10.sp, maxLines = 1,
                         overflow = TextOverflow.Ellipsis)
                 }
+                Text("日志", color = Accent, fontSize = 12.sp,
+                    modifier = Modifier.clickable {
+                        diag = vm.buildDiag()
+                        logOpen = true
+                    }.padding(8.dp))
                 Text("返回", color = TextMid, fontSize = 12.sp,
                     modifier = Modifier.clickable { vm.disconnect(); onBack() }.padding(8.dp))
             }
@@ -369,6 +374,11 @@ private fun GalleryBrowse(vm: GalleryViewModel, onBack: () -> Unit) {
                     Text("下载 " + selected.size + " 张", fontSize = 13.sp)
                 }
             }
+        }
+
+        // 诊断日志面板
+        if (logOpen) {
+            LogPanel(diag) { logOpen = false }
         }
 
         // 下载进度浮层

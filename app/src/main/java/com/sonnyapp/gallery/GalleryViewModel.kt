@@ -8,6 +8,7 @@ import android.util.LruCache
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonnyapp.core.dlna.DlnaItem
+import com.sonnyapp.diag.Diagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -157,7 +158,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     private var downloadJob: Job? = null
 
-    val savedSsid: String get() = prefs.getString("ssid", "DIRECT-p2E0:ILCE-6300") ?: ""
+    val savedSsid: String get() = prefs.getString("ssid", "") ?: ""
     val savedPass: String get() = prefs.getString("pass", "") ?: ""
 
     // ------------------------------------------------------------ 连接
@@ -385,6 +386,34 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearTasks() {
         _tasks.value = emptyList()
+    }
+
+    // ---------------------------------------------------------- 诊断
+
+    /**
+     * 生成诊断报告。
+     *
+     * 用户的机型、Android 版本、相机型号与固件各不相同，报告必须包含完整环境信息，
+     * 否则只凭「传不了照片」无法定位问题。用户可在日志面板一键复制后发出。
+     */
+    fun buildDiag(): String {
+        val w = _wifi.value
+        val all = _allFiles.value
+        val extras = listOf(
+            "状态" to _status.value,
+            "DLNA 设备" to (if (repo.friendlyName.isEmpty()) "(未知)" else repo.friendlyName),
+            "Wi-Fi SSID" to (w.ssid ?: if (w.connected) "(系统未提供)" else "(未连接)"),
+            "判为相机热点" to if (w.looksLikeCamera) "是" else "否",
+            "照片总数" to all.size.toString(),
+            "可下原图" to all.count { it.canDownloadOriginal }.toString(),
+            "当前显示" to _groups.value.sumOf { it.items.size }.toString(),
+            "筛选模式" to _filter.value.name,
+            "缩略图缓存" to thumbStats(),
+            "保存位置" to (_saveTreeUri.value?.let { "自选目录" } ?: "系统相册 Pictures/SonnyApp"),
+            "下载并发" to _concurrency.value.toString(),
+            "支持格式" to _protocols.value.joinToString(" | "),
+        )
+        return Diagnostics.build(getApplication(), repo.logText(), extras)
     }
 
     // ---------------------------------------------------------- 保存位置
