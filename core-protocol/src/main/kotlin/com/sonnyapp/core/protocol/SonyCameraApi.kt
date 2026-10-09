@@ -10,6 +10,8 @@ package com.sonnyapp.core.protocol
  *  3. **每次状态切换后都要刷新能力**。
  *  4. 取景中直接拍照可行（实机 2485 ms，流不中断），不需要 stopLiveview。
  *  5. 任何调用失败都按能力问题降级，不弹错误。
+ *  6. **startRecMode 之后等 cameraStatus 变 IDLE 再 startLiveview**：
+ *     未就绪时相机可能返回 URL 却不推送取景数据。
  */
 class SonyCameraApi(
     private val client: SonyJsonRpcClient,
@@ -141,6 +143,31 @@ class SonyCameraApi(
         var waited = 0L
         while (waited < timeoutMs) {
             if (isLiveviewReady()) return true
+            sleeper(intervalMs)
+            waited += intervalMs
+        }
+        return false
+    }
+
+    /**
+     * 等待 cameraStatus 变 IDLE —— 相机进入遥控模式后的就绪标志。
+     *
+     * startRecMode 返回不代表状态已迁移完成；未就绪时调用 startLiveview，
+     * 部分机型会正常返回 URL 但始终不推送取景数据。
+     * 相机不报告 cameraStatus 时立即返回 false，不做无谓等待。
+     */
+    fun awaitCameraIdle(timeoutMs: Long = 5000, intervalMs: Long = 400): Boolean {
+        var waited = 0L
+        var first = true
+        while (waited < timeoutMs) {
+            val status = try {
+                readEvent().cameraStatus
+            } catch (e: Exception) {
+                ""
+            }
+            if (status == "IDLE") return true
+            if (first && status.isEmpty()) return false
+            first = false
             sleeper(intervalMs)
             waited += intervalMs
         }

@@ -114,4 +114,23 @@ object NetHttp {
         }
         return sb.toString()
     }
+
+    /** 响应首行（HTTP 状态行）。 */
+    fun statusLine(headers: String): String =
+        headers.lineSequence().firstOrNull()?.trim() ?: ""
+
+    /**
+     * 响应头是否声明 Transfer-Encoding: chunked。
+     *
+     * 取景流的分帧形态必须由响应头决定，不能假定：同一个解析器在 chunked 与
+     * 裸流两种模式下对字节的解释完全不同，选错会一帧都切不出来。
+     */
+    fun isChunked(headers: String): Boolean {
+        val h = headers.lowercase()
+        val i = h.indexOf("transfer-encoding")
+        if (i < 0) return false
+        val j = h.indexOf('\n', i)
+        val line = if (j > i) h.substring(i, j) else h.substring(i)
+        return line.contains("chunked")
+    }
 }

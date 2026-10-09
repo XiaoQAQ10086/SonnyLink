@@ -79,7 +79,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val _tasks = MutableStateFlow<List<DlTask>>(emptyList())
     val tasks: StateFlow<List<DlTask>> = _tasks.asStateFlow()
 
-    /** 保存位置（SAF 目录 URI 字符串）。null = 存到系统相册的 Pictures/SonnyApp。 */
+    /** 保存位置（SAF 目录 URI 字符串）。null = 存到系统相册的 Pictures/SonnyLink。 */
     private val _wifi = MutableStateFlow(com.sonnyapp.camera.WifiState())
     val wifiState: StateFlow<com.sonnyapp.camera.WifiState> = _wifi.asStateFlow()
 
@@ -409,7 +409,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             "当前显示" to _groups.value.sumOf { it.items.size }.toString(),
             "筛选模式" to _filter.value.name,
             "缩略图缓存" to thumbStats(),
-            "保存位置" to (_saveTreeUri.value?.let { "自选目录" } ?: "系统相册 Pictures/SonnyApp"),
+            "保存位置" to (_saveTreeUri.value?.let { "自选目录" } ?: "系统相册 Pictures/SonnyLink"),
             "下载并发" to _concurrency.value.toString(),
             "支持格式" to _protocols.value.joinToString(" | "),
         )

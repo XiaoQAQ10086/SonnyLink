@@ -273,7 +273,7 @@ private fun GalleryBrowse(vm: GalleryViewModel, onBack: () -> Unit) {
 
             // 保存位置
             Text(
-                "保存到：" + (saveUri?.let { "自选目录" } ?: "系统相册 Pictures/SonnyApp") + "   （点击更改）",
+                "保存到：" + (saveUri?.let { "自选目录" } ?: "系统相册 Pictures/SonnyLink") + "   （点击更改）",
                 color = Accent, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)
                     .clickable { picker.launch(null) },

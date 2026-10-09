@@ -496,18 +496,42 @@ private fun LiveviewScreen(vm: CameraViewModel) {
                             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
                             .padding(start = 20.dp)
                     ) {
-                        val p = photo
-                        if (p != null) {
-                            Image(
-                                bitmap = p.asImageBitmap(),
-                                contentDescription = "最近拍摄",
-                                modifier = Modifier.size(52.dp).clip(RoundedCornerShape(10.dp))
-                                    .border(1.dp, Ink3, RoundedCornerShape(10.dp))
-                                    .clickable { photoOpen = true; tick++ },
-                                contentScale = ContentScale.Crop,
-                            )
-                        } else if (showExtras) {
-                            IconButtonBox("断开") { vm.disconnect(); tick++ }
+                        // 预览图与「断开」**并排**显示。
+                        //
+                        // 这两者曾经写成 if / else：拍过照片后预览图会永久占住这个位置，
+                        // 「断开」按钮再也不会出现，用户只能强杀进程退出。
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            val p = photo
+                            if (p != null) {
+                                // 缩略图：点击看大图，点右上角 × 清除
+                                Box {
+                                    Image(
+                                        bitmap = p.asImageBitmap(),
+                                        contentDescription = "最近拍摄",
+                                        modifier = Modifier.size(48.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .border(1.dp, Ink3, RoundedCornerShape(10.dp))
+                                            .clickable { photoOpen = true; tick++ },
+                                        contentScale = ContentScale.Crop,
+                                    )
+                                    Box(
+                                        Modifier.align(Alignment.TopEnd)
+                                            .offset(x = 6.dp, y = (-6).dp)
+                                            .size(20.dp)
+                                            .background(Color(0xCC000000), CircleShape)
+                                            .clickable { vm.clearPhoto(); tick++ },
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Text("×", color = Color.White, fontSize = 13.sp)
+                                    }
+                                }
+                            }
+                            if (showExtras) {
+                                IconButtonBox("断开") { vm.disconnect(); tick++ }
+                            }
                         }
                     }
 
@@ -562,6 +586,18 @@ private fun LiveviewScreen(vm: CameraViewModel) {
                     fontSize = 11.sp,
                     modifier = Modifier.align(Alignment.BottomCenter)
                         .safeDrawingPadding().padding(bottom = 16.dp),
+                )
+                // 显式关闭入口，不能只靠点空白处
+                Text(
+                    "关闭",
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    modifier = Modifier.align(Alignment.TopEnd)
+                        .safeDrawingPadding().padding(16.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color(0x99000000))
+                        .clickable { photoOpen = false }
+                        .padding(horizontal = 14.dp, vertical = 7.dp),
                 )
             }
         }

@@ -135,7 +135,7 @@ class GalleryRepository(private val context: Context) {
     /**
      * 下载到指定位置。
      *
-     * @param treeUri SAF 目录（用户选的保存位置）。为 null 时存到系统相册的 Pictures/SonnyApp。
+     * @param treeUri SAF 目录（用户选的保存位置）。为 null 时存到系统相册的 Pictures/SonnyLink。
      */
     suspend fun downloadTo(
         item: DlnaItem,
@@ -245,7 +245,7 @@ class GalleryRepository(private val context: Context) {
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, item.title)
             put(MediaStore.MediaColumns.MIME_TYPE, mime)
-            put(MediaStore.MediaColumns.RELATIVE_PATH, if (isVideo) "Movies/SonnyApp" else "Pictures/SonnyApp")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, if (isVideo) "Movies/SonnyLink" else "Pictures/SonnyLink")
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
         val uri = resolver.insert(collection, values) ?: return -1L

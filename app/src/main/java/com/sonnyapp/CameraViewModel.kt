@@ -3,6 +3,7 @@ package com.sonnyapp
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Network
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonnyapp.camera.CameraRepository
@@ -106,6 +107,19 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     private var statsJob: Job? = null
     private var statusJob: Job? = null
     private var evJob: Job? = null
+    private var watchdogJob: Job? = null
+
+    /** 已停止的取景流水线诊断。重试时保留，第一次的响应头与首字节才是定位依据。 */
+    private val liveviewAttempts = ArrayList<String>()
+
+    /**
+     * 取景最终失败的原因。
+     *
+     * 快门、曝光写入等操作成功后会恢复状态栏；如果没有这个标记，
+     * 它们会把「取景无画面」覆盖成「取景中」，界面与诊断报告都会误报正常。
+     */
+    @Volatile
+    private var liveviewFailure: String? = null
 
     /** 最近一次参数写入的结果 —— 写进诊断文件，因为 logcat 被 MIUI 屏蔽。 */
     @Volatile
@@ -257,14 +271,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                 _log.value = repo.logText()
 
                 val net = repo.network ?: throw IllegalStateException("相机网络已断开")
-                val e = LiveviewEngine(net, renderer)
-                engine = e
-                e.start(viewModelScope, url)
-                startStatsTicker(e)
+                engine = startEngine(net, url, watch = true)
                 startStatusTicker()
                 // 取景流只有 ~17fps，屏幕跑高刷没意义 —— 降到 60Hz 省电
                 RefreshRate.setLowPower(true)
-                _status.value = "取景中"
+                liveviewFailure = null
+                restoreStatus()
             } catch (ex: Exception) {
                 _log.value = repo.logText()
                 _status.value = "连接失败：" + (ex.message ?: ex.toString())
@@ -301,10 +313,86 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                     imgBottom = renderer.imageBottom,
                 )
                 val err = e.lastError
-                if (err != null) _status.value = "取景中断：" + err
+                if (err != null) {
+                    _status.value = "取景中断：" + err
+                } else if (e.framesTotal > 0 && liveviewFailure != null) {
+                    // 换分帧模式后终于出帧：清除失败标记
+                    liveviewFailure = null
+                    restoreStatus()
+                }
                 delay(500)
             }
         }
+    }
+
+    /**
+     * 启动一条取景流水线。
+     *
+     * @param watch 是否挂首帧看门狗。重试路径自行处理结果，避免看门狗递归重试。
+     */
+    private fun startEngine(net: Network, url: String, watch: Boolean): LiveviewEngine {
+        val e = LiveviewEngine(net, renderer)
+        e.start(viewModelScope, url)
+        startStatsTicker(e)
+        if (watch) startLiveviewWatchdog(e)
+        return e
+    }
+
+    /**
+     * 首帧看门狗。
+     *
+     * 取景流可能停在「连接成功但不推流」的状态：状态栏显示「取景中」，画面却始终空白，
+     * 而且不产生任何错误。相机也可能要等状态迁移完成后才真正开始推送，
+     * 因此超时后重启一次取景流；仍无帧才对外报告，并把失败摘要写进连接日志。
+     */
+    private fun startLiveviewWatchdog(first: LiveviewEngine) {
+        watchdogJob?.cancel()
+        watchdogJob = viewModelScope.launch {
+            delay(FIRST_FRAME_TIMEOUT_MS)
+            if (first.framesTotal > 0) return@launch
+
+            repo.logLine("取景首帧超时：" + first.failureSummary())
+            _status.value = "取景无画面，正在重试…"
+            retireEngine(first)
+            first.stop()
+
+            val retry: LiveviewEngine? = try {
+                val url = repo.restartLiveview()
+                val net = repo.network ?: throw IllegalStateException("相机网络已断开")
+                val e = startEngine(net, url, watch = false)
+                engine = e
+                startStatusTicker()
+                e
+            } catch (ex: Exception) {
+                repo.logLine("取景重试失败：" + (ex.message ?: ""))
+                _status.value = "取景无画面：" + (ex.message ?: "")
+                null
+            }
+
+            if (retry != null) {
+                delay(FIRST_FRAME_TIMEOUT_MS)
+                if (retry.framesTotal > 0) {
+                    liveviewFailure = null
+                    restoreStatus()
+                } else {
+                    repo.logLine("取景重试后仍无画面：" + retry.failureSummary())
+                    liveviewFailure = retry.failureReason ?: "相机未推送取景数据"
+                    restoreStatus()
+                }
+            }
+        }
+    }
+
+    /** 把状态栏恢复到当前真实状态：取景失败优先于「取景中」。 */
+    private fun restoreStatus() {
+        val f = liveviewFailure
+        _status.value = if (f != null) "取景无画面：" + f else "取景中"
+    }
+
+    /** 保留一条已停止流水线的诊断，避免重试覆盖掉第一次的字节级证据。 */
+    private fun retireEngine(e: LiveviewEngine?) {
+        if (e == null) return
+        liveviewAttempts.add(e.diagnostics())
     }
 
     // ------------------------------------------------- 相机状态轮询（只读）
@@ -375,7 +463,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
             _camInfo.value = _camInfo.value.copy(evWriteFailed = !ok)
             if (ok) {
                 // 成功后必须清除错误状态，否则提示会持续显示。
-                if (_status.value.startsWith(ERR_EV)) _status.value = "取景中"
+                if (_status.value.startsWith(ERR_EV)) restoreStatus()
             } else {
                 evHoldUntil = 0L
                 _status.value = ERR_EV + _camInfo.value.exposureMode + "）"
@@ -402,6 +490,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
 
     fun zoom(direction: String, movement: String) {
         viewModelScope.launch { repo.actZoom(direction, movement) }
+    }
+
+    /**
+     * 清除「最近拍摄」预览。
+     *
+     * 预览图此前会永久停留，用户看不到「断开」按钮就退不出去（见 LiveviewScreen 的说明）。
+     */
+    fun clearPhoto() {
+        _photo.value = null
+        _photoInfo.value = ""
     }
 
     fun takePicture() {
@@ -434,7 +532,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                 _status.value = "拍照失败：" + (ex.message ?: "")
             } finally {
                 _busy.value = false
-                if (_connected.value) _status.value = "取景中"
+                if (_connected.value) restoreStatus()
             }
         }
     }
@@ -473,6 +571,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
             "可写 EV" to (c.canSetEv.toString() + "  (范围 " + c.evMin + " .. " + c.evMax + ")"),
             "可写定时自拍" to c.canSelfTimer.toString(),
             "最近参数写入" to lastWriteResult,
+            "取景分帧" to (engine?.adoptedFraming?.name ?: "(未启动)"),
+            "取景字节" to ((engine?.bytesRead ?: 0L).toString() + " B"),
+            "取景首字节" to (engine?.firstBytesHex?.take(47) ?: "(无)"),
         )
         // 渲染器自检（GL 版本、着色器编译结果、帧统计）也一并附上
         val render = try {
@@ -482,9 +583,32 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         }
         return Diagnostics.build(
             getApplication<Application>(),
-            repo.logText() + "\n--- 渲染自检 ---\n" + render,
+            repo.logText() + "\n" + liveviewSection() + "--- 渲染自检 ---\n" + render,
             extras,
         )
+    }
+
+    /**
+     * 取景流水线诊断段。
+     *
+     * 重试会产生多条流水线，全部保留：第一次的响应头与首字节往往才是定位依据，
+     * 只报告最后一次会丢掉关键证据。
+     */
+    private fun liveviewSection(): String {
+        val sb = StringBuilder()
+        var n = 0
+        for (d in liveviewAttempts) {
+            n++
+            sb.append("--- 取景流水线（第 ").append(n).append(" 次尝试）---\n").append(d).append('\n')
+        }
+        val cur = engine
+        if (cur != null) {
+            n++
+            sb.append("--- 取景流水线（第 ").append(n).append(" 次尝试）---\n")
+                .append(cur.diagnostics()).append('\n')
+        }
+        if (n == 0) sb.append("--- 取景流水线 ---\n(未启动)\n")
+        return sb.toString()
     }
 
     fun disconnect() {
@@ -492,6 +616,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
             statsJob?.cancel()
             statusJob?.cancel()
             evJob?.cancel()
+            watchdogJob?.cancel()
+            retireEngine(engine)
             engine?.stop()
             engine = null
             RefreshRate.setLowPower(false)
@@ -508,6 +634,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         statsJob?.cancel()
         statusJob?.cancel()
         evJob?.cancel()
+        watchdogJob?.cancel()
         engine?.stop()
         repo.disconnect()
         super.onCleared()
@@ -517,6 +644,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         private const val KEY_SSID = "ssid"
         private const val KEY_PASS = "pass"
         private const val HOLD_MS = 4000L
+
+        /** 首帧看门狗：超过这个时长没有任何取景帧就重启取景流 */
+        private const val FIRST_FRAME_TIMEOUT_MS = 9000L
         private const val ERR_EV = "曝光补偿写入被相机拒绝（曝光模式 "
         private const val KEY_SCALE = "scaleMode"
         private const val KEY_SHARPEN = "sharpen"

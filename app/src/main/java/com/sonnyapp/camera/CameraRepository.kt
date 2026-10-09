@@ -47,6 +47,11 @@ class CameraRepository(private val context: Context) {
 
     fun logText(): String = synchronized(log) { log.toString() }
 
+    /** 供上层把取景阶段的关键结论写进连接日志（诊断报告会带上这一段）。 */
+    fun logLine(msg: String) {
+        note(msg)
+    }
+
     /** 当前 Wi-Fi 状态（判断用户连的是不是相机）。 */
     fun wifiState(): WifiState = net.wifiState()
 
@@ -143,6 +148,19 @@ class CameraRepository(private val context: Context) {
         a.refreshCapabilities()
         a.startRecMode()
 
+        // startRecMode 返回不代表状态已迁移完成（NotReady -> IDLE）。
+        // 未就绪时 startLiveview 可能返回 URL 却不推送数据。
+        val idle = a.awaitCameraIdle(REC_IDLE_TIMEOUT_MS, 400)
+        val cameraStatus = try {
+            a.readEvent().cameraStatus
+        } catch (e: Exception) {
+            ""
+        }
+        note(
+            "      相机状态 = " + (if (cameraStatus.isEmpty()) "(未报告)" else cameraStatus) +
+                "  等待 IDLE = " + idle
+        )
+
         val caps = a.capabilities
         note("      可用方法 " + caps.available.size + " 个 / 固件支持 " + caps.supported.size + " 个")
         note("      取景=" + caps.canLiveview + "  拍照=" + caps.canTakePicture +
@@ -154,7 +172,42 @@ class CameraRepository(private val context: Context) {
         val a = api ?: throw IllegalStateException("尚未连接")
         val url = a.startLiveview()
         note("取景流 " + url)
+        logLiveviewState(a)
         url
+    }
+
+    /**
+     * 重新建立取景流。
+     *
+     * 相机可能停在「startLiveview 返回了 URL 但不推流」的状态；
+     * 先 stopLiveview 再重新启动可以恢复到正常推流。stopLiveview 失败不影响后续调用。
+     */
+    suspend fun restartLiveview(): String = withContext(Dispatchers.IO) {
+        val a = api ?: throw IllegalStateException("尚未连接")
+        try {
+            a.stopLiveview()
+        } catch (e: Exception) {
+            note("      stopLiveview 忽略：" + e.message)
+        }
+        val url = a.startLiveview()
+        note("取景流（重试） " + url)
+        val ready = a.awaitLiveviewReady(LIVEVIEW_READY_TIMEOUT_MS, 500)
+        note("      等待 liveviewStatus = " + ready)
+        logLiveviewState(a)
+        url
+    }
+
+    /** 取景状态快照，一次 getEvent 往返。 */
+    private fun logLiveviewState(a: SonyCameraApi) {
+        try {
+            val e = a.readEvent()
+            note(
+                "      相机状态 = " + (if (e.cameraStatus.isEmpty()) "(未报告)" else e.cameraStatus) +
+                    "  取景就绪 = " + e.liveviewStatus
+            )
+        } catch (ex: Exception) {
+            note("      取景状态读取失败：" + ex.message)
+        }
     }
 
     suspend fun awaitLiveviewReady(): Boolean {
@@ -319,5 +372,11 @@ class CameraRepository(private val context: Context) {
 
     companion object {
         private const val TAG = "CameraRepository"
+
+        /** startRecMode 之后等待相机进入 IDLE 的最长时间 */
+        private const val REC_IDLE_TIMEOUT_MS = 5000L
+
+        /** 重试取景时等待 liveviewStatus 变 true 的最长时间 */
+        private const val LIVEVIEW_READY_TIMEOUT_MS = 3000L
     }
 }

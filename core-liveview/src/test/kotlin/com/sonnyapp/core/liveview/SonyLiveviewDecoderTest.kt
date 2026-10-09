@@ -54,6 +54,26 @@ class SonyLiveviewDecoderTest {
         assertEquals("frameCount 应与返回帧数一致", 81, dec.frameCount)
     }
 
+    /**
+     * 响应头未声明 chunked 时，body 是容器包首尾相接的形态。
+     *
+     * 该形态是分帧自动判定的第二档：chunked 模式切不出帧时改用它重解析同一段字节。
+     * 用真实抓包去掉 chunk 头后再解析，结果必须与 chunked 模式逐帧一致。
+     */
+    @Test
+    fun rawContainerModeDecodesDechunkedStream() {
+        val bodies = dechunk(fixture())
+        val dechunked = bodies.reduce { a, b -> a + b }
+
+        val dec = SonyLiveviewDecoder(chunked = false)
+        val frames = dec.feed(dechunked)
+
+        assertEquals("裸容器模式也应切出 81 帧", 81, frames.size)
+        assertEquals("不应发生重同步", 0, dec.resyncCount)
+        assertEquals("首帧载荷长度", 6016, frames[0].payloadSize)
+        assertEquals("首帧真实 JPEG 长度", 5967, frames[0].jpegLength)
+    }
+
     @Test
     fun firstFrameMatchesDocumentedByteLayout() {
         val frames = SonyLiveviewDecoder(chunked = true).feed(fixture())
