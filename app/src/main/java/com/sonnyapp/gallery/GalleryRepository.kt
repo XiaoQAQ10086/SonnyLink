@@ -11,6 +11,7 @@ import com.sonnyapp.camera.CameraNetwork
 import com.sonnyapp.camera.DlnaClient
 import com.sonnyapp.core.dlna.DidlResult
 import com.sonnyapp.core.dlna.DlnaItem
+import com.sonnyapp.core.dlna.DlnaPaging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.InputStream
@@ -102,17 +103,53 @@ class GalleryRepository(private val context: Context) {
         return null
     }
 
+    /**
+     * 读取单个容器的一页。
+     *
+     * **相机把单次返回量截断在 50 项**，再多也只会给前 50 ——
+     * 需要完整列表时必须用 [browseAll]。
+     */
     suspend fun browse(objectId: String = "0", startIndex: Int = 0, count: Int = 100): DidlResult =
         withContext(Dispatchers.IO) {
             try {
                 val r = client?.browse(objectId, startIndex, count) ?: DidlResult()
-                note("Browse " + objectId + " -> " + r.items.size + " 项 / 共 " + r.totalMatches)
+                note("Browse " + objectId + " @" + startIndex + " -> " + r.items.size + " 项 / 共 " + r.totalMatches)
                 r
             } catch (e: Exception) {
                 note("Browse " + objectId + " 失败: " + (e.message ?: ""))
                 DidlResult()
             }
         }
+
+    /**
+     * 完整读取一个容器，必要时自动翻页。
+     *
+     * 不翻页的后果是**静默丢图**：实测 a7R II 的日期文件夹 TotalMatches=220，
+     * 单次请求只回 50 项，界面上就只显示前 50 张，且不报任何错。
+     *
+     * 单页失败时保留已取到的部分并停止翻页，不抛异常。
+     */
+    suspend fun browseAll(
+        objectId: String = "0",
+        requestCount: Int = DlnaPaging.REQUEST_COUNT,
+    ): DidlResult = withContext(Dispatchers.IO) {
+        val c = client ?: return@withContext DidlResult()
+        var pages = 0
+        val r = DlnaPaging.browseAll(requestCount) { start, count ->
+            pages++
+            try {
+                c.browse(objectId, start, count)
+            } catch (e: Exception) {
+                note("Browse " + objectId + " 第 " + pages + " 页失败: " + (e.message ?: ""))
+                DidlResult()
+            }
+        }
+        note(
+            "Browse " + objectId + " -> " + r.items.size + " 项 / 共 " + r.totalMatches +
+                "（" + pages + " 页）"
+        )
+        r
+    }
 
     /** 服务器自报支持的格式。用来在 UI 上说明「为什么没有 RAW」。 */
     suspend fun readProtocolInfo(): List<String> = withContext(Dispatchers.IO) {

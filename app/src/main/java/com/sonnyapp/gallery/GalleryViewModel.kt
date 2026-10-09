@@ -239,7 +239,9 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                 var id = "0"
                 var depth = 0
                 while (depth < 4) {
-                    val r = repo.browse(id, 0, 200)
+                    // 翻页读取：日期列表本身超过 50 个时也会被截断，
+                    // 不翻页会直接丢掉整个日期分组
+                    val r = repo.browseAll(id)
                     all.addAll(r.files)
                     containers = r.containers
                     if (containers.size != 1 || r.files.isNotEmpty()) break
@@ -254,7 +256,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                 val lists = coroutineScope {
                     containers.map { c ->
                         async(Dispatchers.IO) {
-                            val files = gate.withPermit { repo.browse(c.id, 0, 500).files }
+                            val files = gate.withPermit { repo.browseAll(c.id).files }
                             _status.value = "读取目录 " + done.incrementAndGet() + " / " + total + " …"
                             files
                         }
