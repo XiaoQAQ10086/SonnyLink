@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import com.sonnyapp.sync.BackupService
 import com.sonnyapp.theme.SonnyAppTheme
 import com.sonnyapp.ui.AppRoot
 
@@ -60,6 +61,15 @@ class MainActivity : ComponentActivity() {
                     AppRoot()
                 }
             }
+        }
+
+        // 归档队列：载入历史队列并尝试补传。
+        // 连相机热点时没有 VALIDATED 网络，这里会自动跳过、只保留队列。
+        try {
+            BackupService.init(applicationContext)
+            BackupService.maybeAutoUpload()
+        } catch (e: Exception) {
+            // 归档是附加功能，任何异常都不能影响主流程
         }
     }
 

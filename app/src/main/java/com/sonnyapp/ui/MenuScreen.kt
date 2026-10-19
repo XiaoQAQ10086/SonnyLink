@@ -39,7 +39,7 @@ import com.sonnyapp.theme.TextMid
  * 两者互斥，由启动页选择进入哪个功能。
  */
 @Composable
-fun MenuScreen(onRemote: () -> Unit, onGallery: () -> Unit) {
+fun MenuScreen(onRemote: () -> Unit, onGallery: () -> Unit, onBackup: () -> Unit) {
     Column(
         Modifier.fillMaxSize().background(Ink0).safeDrawingPadding().padding(horizontal = 28.dp),
         verticalArrangement = Arrangement.Center,
@@ -72,6 +72,13 @@ fun MenuScreen(onRemote: () -> Unit, onGallery: () -> Unit) {
             subtitle = "浏览卡内照片 · 下载全尺寸原图",
             hint = "相机需切到「发送到智能手机」",
             onClick = onGallery,
+        )
+        Spacer(Modifier.height(14.dp))
+        ModeCard(
+            title = "自动归档",
+            subtitle = "下载的照片排队上 NAS（WebDAV）",
+            hint = "相机热点无外网 · 回到 Wi-Fi 后自动补传",
+            onClick = onBackup,
         )
 
         Spacer(Modifier.height(28.dp))

@@ -9,6 +9,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonnyapp.core.dlna.DlnaItem
 import com.sonnyapp.diag.Diagnostics
+import com.sonnyapp.sync.BackupService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -359,6 +360,16 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                                         }
                                     }
                                 },
+                                // 归档：只有配置过 NAS 地址才入队，否则队列会无声堆积
+                                onSaved = { saved ->
+                                    if (saved != null && BackupService.config().ready) {
+                                        BackupService.enqueue(
+                                            getApplication(),
+                                            saved.toString(),
+                                            item.title,
+                                        )
+                                    }
+                                },
                             )
                             if (written > 0) {
                                 val tag = if (item.downloadIsOriginal) "原图 " else "预览图 "
@@ -366,8 +377,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                                     it.copy(state = DlState.DONE, done = written, note = tag + humanSize(written))
                                 }
                                 true
-                            } else {
-                                updateTask(idx) { it.copy(state = DlState.FAILED, note = "下载失败") }
+                            } else {                                updateTask(idx) { it.copy(state = DlState.FAILED, note = "下载失败") }
                                 false
                             }
                         }

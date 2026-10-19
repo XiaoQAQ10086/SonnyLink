@@ -1,0 +1,30 @@
+SonnyLink — 派生版本声明 / NOTICE
+================================
+
+本仓库（leijunhello/SonnyLink）是以下项目的派生作品（derivative work）：
+
+    上游项目：SonnyLink
+    上游地址：https://github.com/XiaoQAQ10086/SonnyLink
+    上游作者：XiaoQAQ10086 (https://github.com/XiaoQAQ10086)
+    上游许可：MIT License
+    派生基点：commit 1833891 ("fix: 1.1.4")
+
+原始版权声明（见 LICENSE，原样保留、未修改）：
+
+    Copyright (c) 2026 SonnyLink contributors
+
+本派生版本在原项目基础上新增/修改了以下内容（详见 CHANGES-1.2.0.md）：
+
+  - 监看辅助：峰值对焦（GLES 片元着色器）、构图网格、亮度直方图、
+    数码变焦（1x–6x）、取景帧截图
+  - NAS 自动归档：WebDAV 上传 + 持久化队列 + 回到有网环境自动补传
+  - 工程侧：Gradle 9.8.1 / AGP 9.4.1 / Kotlin 2.4.21 升级
+
+本派生版本的修改部分同样以 MIT License 发布，与上游许可一致。
+
+说明：
+
+  - 本仓库不是上游官方发布，也未获得上游作者的背书或认可。
+  - 本仓库与索尼公司（Sony Corporation）无任何关联，未获授权或认可。
+    仅通过分析相机公开的网络接口实现，供连接自己拥有的相机使用。
+  - 若上游作者希望本派生版本调整署名方式或下线，请通过本仓库的 Issue 联系。

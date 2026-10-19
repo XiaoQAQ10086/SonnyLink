@@ -46,6 +46,29 @@ class LiveviewRenderer {
     @Volatile
     var sharpen: SharpenLevel = SharpenLevel.WEAK
 
+    /**
+     * 峰值对焦强度。
+     *
+     * 做在着色器里而不是 Compose 层：要在 640x424 上做边缘检测再放大，
+     * 放到 CPU 上等于每帧多一次全图遍历，而 GPU 这里只是多 4 次纹理采样，
+     * 单帧总耗时仍在 8 ms 量级。
+     */
+    @Volatile
+    var peaking: PeakingLevel = PeakingLevel.OFF
+
+    @Volatile
+    var peakColor: PeakingColor = PeakingColor.RED
+
+    /** 数码变焦倍数（1 = 原始）。缩放只裁源矩形，不改变画面在黑边里的位置。 */
+    @Volatile
+    var zoom: Float = 1f
+
+    /** 变焦中心，图像归一化坐标（0..1）。 */
+    @Volatile
+    var focusX: Float = 0.5f
+    @Volatile
+    var focusY: Float = 0.5f
+
     @Volatile
     var lastDrawMs: Long = 0L
         private set
@@ -89,6 +112,8 @@ class LiveviewRenderer {
         val sb = StringBuilder()
         sb.append("附加 SurfaceView: ").append(glView != null).append('\n')
         sb.append("scaleMode=").append(scaleMode).append("  sharpen=").append(sharpen).append('\n')
+        sb.append("peaking=").append(peaking).append('/').append(peakColor)
+            .append("  zoom=").append(String.format("%.2f", zoom)).append('\n')
         sb.append("已绘制 ").append(framesDrawn).append(" 帧，跳过 ")
             .append(framesSkipped).append(" 帧，上次绘制 ").append(lastDrawMs).append(" ms\n")
         sb.append(gl.selfCheck())
@@ -118,6 +143,16 @@ class LiveviewRenderer {
     }
 
     fun isReady(): Boolean = gl.hasSurface
+
+    /**
+     * 只改参数（峰值/变焦）时请求重绘一帧。
+     *
+     * 取景流本身 17fps 会自然刷新，但用户捏合变焦时反馈必须**立刻**跟上，
+     * 等下一帧（最多 60 ms）会有明显滞后感。
+     */
+    fun requestRender() {
+        try { glView?.requestRender() } catch (e: Exception) { }
+    }
 
     /** 由取景流水线线程调用。 */
     fun draw(bitmap: Bitmap): Boolean {
@@ -185,6 +220,8 @@ class LiveviewRenderer {
 
         private var uTexSize = 0
         private var uSharpen = 0
+        private var uPeak = 0
+        private var uPeakColor = 0
 
         private var viewW = 0
         private var viewH = 0
@@ -214,6 +251,8 @@ class LiveviewRenderer {
             }
             uTexSize = GLES20.glGetUniformLocation(mp.id, "uTexSize")
             uSharpen = GLES20.glGetUniformLocation(mp.id, "uSharpen")
+            uPeak = GLES20.glGetUniformLocation(mp.id, "uPeak")
+            uPeakColor = GLES20.glGetUniformLocation(mp.id, "uPeakColor")
 
             val ids = IntArray(1)
             GLES20.glGenTextures(1, ids, 0)
@@ -256,6 +295,8 @@ class LiveviewRenderer {
             GLES20.glUniform1i(mp.uTex, 0)
             GLES20.glUniform2f(uTexSize, texW.toFloat(), texH.toFloat())
             GLES20.glUniform1f(uSharpen, sharpenAmount())
+            GLES20.glUniform1f(uPeak, peaking.threshold)
+            GLES20.glUniform3f(uPeakColor, peakColor.r, peakColor.g, peakColor.b)
             mp.draw(dstMin, dstMax, srcMin, srcMax, quad)
 
             // 把 NDC 目标矩形换算成"相对 View 的归一化矩形"给 UI 用
@@ -341,6 +382,28 @@ class LiveviewRenderer {
                     srcMax[1] = (sy + sh) / bh
                 }
             }
+
+            // ---- 数码变焦：在上一步算出的源矩形里再裁一块 ----
+            //
+            // 只动源矩形、不动目标矩形：画面依然填满原来的位置（黑边不变），
+            // 所以网格、EV 滑杆这些贴着画面边缘的控件不会因为变焦而跳动。
+            val z = zoom.coerceIn(1f, MAX_ZOOM)
+            if (z > 1.001f) {
+                val l0 = srcMin[0]
+                val t0 = srcMin[1]
+                val r0 = srcMax[0]
+                val b0 = srcMax[1]
+                val nw = (r0 - l0) / z
+                val nh = (b0 - t0) / z
+                val cx = l0 + (r0 - l0) * focusX.coerceIn(0f, 1f)
+                val cy = t0 + (b0 - t0) * focusY.coerceIn(0f, 1f)
+                val nl = (cx - nw / 2f).coerceIn(l0, (r0 - nw).coerceAtLeast(l0))
+                val nt = (cy - nh / 2f).coerceIn(t0, (b0 - nh).coerceAtLeast(t0))
+                srcMin[0] = nl
+                srcMin[1] = nt
+                srcMax[0] = nl + nw
+                srcMax[1] = nt + nh
+            }
         }
     }
 
@@ -418,6 +481,9 @@ class LiveviewRenderer {
     companion object {
         private const val TAG = "LiveviewRenderer"
 
+        /** 变焦上限。再往上 640x424 的源已经没有信息量，纯粹是马赛克。 */
+        private const val MAX_ZOOM = 6f
+
         private const val VERTEX_SHADER = """
 attribute vec2 aPos;
 uniform vec2 uDstMin;
@@ -442,7 +508,13 @@ precision mediump float;
 uniform sampler2D uTex;
 uniform vec2 uTexSize;
 uniform float uSharpen;
+uniform float uPeak;
+uniform vec3 uPeakColor;
 varying vec2 vTex;
+
+float lumaOf(vec3 rgb) {
+    return dot(rgb, vec3(0.299, 0.587, 0.114));
+}
 
 vec4 cubicWeights(float x) {
     float x2 = x * x;
@@ -485,6 +557,19 @@ void main() {
         vec4 w = texture2D(uTex, vTex + vec2(-tx.x, 0.0));
         vec3 blur = (n.rgb + s.rgb + e.rgb + w.rgb) * 0.25;
         c.rgb = clamp(c.rgb + (c.rgb - blur) * uSharpen, 0.0, 1.0);
+    }
+    // 峰值对焦：Sobel 式的十字梯度，超过阈值就染色。
+    // 采样源纹理而不是放大后的 c —— 在原始 640x424 上算边缘，
+    // 一条合焦线不会因为放大变焦而糊成一片。
+    if (uPeak > 0.001) {
+        vec2 tx = 1.0 / uTexSize;
+        float lL = lumaOf(texture2D(uTex, vTex - vec2(tx.x, 0.0)).rgb);
+        float lR = lumaOf(texture2D(uTex, vTex + vec2(tx.x, 0.0)).rgb);
+        float lU = lumaOf(texture2D(uTex, vTex - vec2(0.0, tx.y)).rgb);
+        float lD = lumaOf(texture2D(uTex, vTex + vec2(0.0, tx.y)).rgb);
+        float grad = length(vec2(lR - lL, lD - lU));
+        float mask = smoothstep(uPeak, uPeak * 1.9, grad);
+        c.rgb = mix(c.rgb, uPeakColor, mask * 0.9);
     }
     gl_FragColor = vec4(c.rgb, 1.0);
 }

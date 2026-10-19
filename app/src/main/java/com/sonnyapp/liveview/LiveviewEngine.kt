@@ -139,6 +139,40 @@ class LiveviewEngine(
     @Volatile var failureReason: String? = null
         private set
 
+    // ------------------------------------------------------------ 监看辅助
+
+    /**
+     * 是否统计直方图。**关掉时一帧像素都不碰** ——
+     * 取景线程本来就只有 17fps 的余量，没必要为用户看不见的数字付费。
+     */
+    @Volatile var assistHistogram: Boolean = false
+
+    /** 最近一次的亮度直方图（256 档）。每次更新都是新数组，UI 直接拿去画。 */
+    @Volatile var histogram: IntArray = EMPTY_BINS
+        private set
+
+    @Volatile var histogramPeak: Int = 0
+        private set
+
+    private var histTick = 0
+    private val binsScratch = IntArray(256)
+
+    /**
+     * 截图请求：下一帧到达时把该帧的 **JPEG 原始字节**交出去。
+     *
+     * 为什么不直接拿解码后的 Bitmap：它被引擎复用（inBitmap），
+     * 交给别的线程保存必然撕裂或拿到别的帧。字节是一次性拷贝，安全且无损。
+     *
+     * 必须 @Volatile：UI 线程写、取景线程读，不加的话写入可能永远不被看到，
+     * 表现为「点了截图没反应」—— 而且偶发，最难查。
+     */
+    @Volatile
+    private var captureSink: ((ByteArray) -> Unit)? = null
+
+    fun requestCapture(sink: (ByteArray) -> Unit) {
+        captureSink = sink
+    }
+
     private val trials = CopyOnWriteArrayList<FramingAttempt>()
 
     fun start(scope: CoroutineScope, url: String) {
@@ -334,6 +368,25 @@ class LiveviewEngine(
                 renderer.draw(bmp)
                 drawMs = renderer.lastDrawMs
                 skipped = renderer.framesSkipped
+
+                // 直方图不必每帧都算：取景 17fps，而人眼对直方图的更新感知在 5Hz 以内。
+                // 每 3 帧算一次，CPU 占用不到 1%。
+                if (assistHistogram) {
+                    histTick++
+                    if (histTick % HIST_EVERY == 0) updateHistogram(bmp)
+                }
+
+                // 截图：把这一帧的 JPEG 字节整块拷出去，随后立即撤销订阅，
+                // 避免用户连点造成多次写入。
+                val sink = captureSink
+                if (sink != null) {
+                    captureSink = null
+                    try {
+                        sink(fr.bytes.copyOfRange(fr.offset, fr.offset + fr.length))
+                    } catch (e: Exception) {
+                        Log.w(TAG, "capture sink failed: " + e.message)
+                    }
+                }
             }
         }
 
@@ -401,8 +454,14 @@ class LiveviewEngine(
         }
     }
 
-    /** 对同一段缓存字节依次试解析全部形态，返回第一个能出帧的。 */
-    private fun resolveFraming(prefix: ByteArray, order: List<LiveviewFraming>): LiveviewFraming? {
+    /** 统计一帧的直方图。只在取景线程调用。 */
+    private fun updateHistogram(bmp: Bitmap) {
+        FrameAnalyzer.lumaHistogram(bmp, binsScratch)
+        histogram = binsScratch.copyOf()
+        histogramPeak = FrameAnalyzer.peak(binsScratch)
+    }
+
+    /** 对同一段缓存字节依次试解析全部形态，返回第一个能出帧的。 */    private fun resolveFraming(prefix: ByteArray, order: List<LiveviewFraming>): LiveviewFraming? {
         var best: LiveviewFraming? = null
         var bestComplete = 0
         for (mode in order) {
@@ -548,5 +607,10 @@ class LiveviewEngine(
 
         /** 报告里记录的首字节数量 */
         private const val HEX_PREFIX_BYTES = 96
+
+        /** 每几帧统计一次直方图 */
+        private const val HIST_EVERY = 3
+
+        private val EMPTY_BINS = IntArray(0)
     }
 }

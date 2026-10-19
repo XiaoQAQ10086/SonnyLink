@@ -14,6 +14,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -236,8 +238,11 @@ private fun LiveviewScreen(vm: CameraViewModel) {
     val camInfo by vm.camInfo.collectAsState()
     val scaleMode by vm.scaleMode.collectAsState()
     val sharpen by vm.sharpen.collectAsState()
+    val assist by vm.assist.collectAsState()
+    val toast by vm.toast.collectAsState()
     // 诊断报告在打开面板那一刻生成（含设备信息 + 连接日志）
     var diag by remember { mutableStateOf("") }
+    var assistOpen by remember { mutableStateOf(false) }
 
     // 极简为默认：常驻只有 取景画面 + 快门 + 相机参数。
     // 「取景中」状态、fps 统计、断开、诊断日志 都收进 showExtras，点一下画面才出现。
@@ -261,16 +266,76 @@ private fun LiveviewScreen(vm: CameraViewModel) {
             modifier = Modifier.fillMaxSize(),
         )
 
-        // ---------- 点画面切换控件显隐（将来这里是触摸对焦） ----------
+        // ---------- 手势层：点一下切换控件 / 双击复位变焦 / 双指捏合变焦 ----------
+        //
+        // 两个 pointerInput 分工：tap 检测在外层，transform 在内层。
+        // 内层先拿到事件，一旦开始移动就 consume —— 外层的手势因此被取消，
+        // 不会出现"捏合变焦结束后顺手把控件也切了"。
         Box(
-            Modifier.fillMaxSize().clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-            ) {
-                showExtras = !showExtras
-                tick++
-            }
+            Modifier.fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = {
+                            showExtras = !showExtras
+                            tick++
+                        },
+                        onDoubleTap = {
+                            vm.resetZoom()
+                            tick++
+                        },
+                    )
+                }
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, pan, gestureZoom, _ ->
+                        vm.applyZoomGesture(
+                            zoomDelta = gestureZoom,
+                            panX = pan.x,
+                            panY = pan.y,
+                            viewW = size.width,
+                            viewH = size.height,
+                        )
+                        tick++
+                    }
+                }
         )
+
+        // ---------- 构图网格：跟着画面矩形走，不侵入黑边 ----------
+        GridOverlay(
+            mode = assist.grid,
+            imgLeft = stats.imgLeft,
+            imgTop = stats.imgTop,
+            imgRight = stats.imgRight,
+            imgBottom = stats.imgBottom,
+        )
+
+        // ---------- 直方图 ----------
+        if (assist.histogram && stats.histogram.isNotEmpty()) {
+            HistogramOverlay(
+                bins = stats.histogram,
+                peak = stats.histPeak,
+                modifier = Modifier.align(Alignment.TopEnd)
+                    // 面板打开时让开面板，否则会被压在下面
+                    .padding(top = if (assistOpen) 208.dp else 56.dp, end = 12.dp)
+                    .size(width = 92.dp, height = 54.dp),
+            )
+        }
+
+        // ---------- 监看辅助面板 ----------
+        if (assistOpen) {
+            AssistPanel(
+                state = assist,
+                onGrid = { vm.cycleGrid() },
+                onPeaking = { vm.cyclePeaking() },
+                onPeakColor = { vm.setPeakColor(it) },
+                onHistogram = { vm.toggleHistogram() },
+                onResetZoom = { vm.resetZoom() },
+                onCapture = { vm.captureLiveview() },
+                onClose = { assistOpen = false },
+            )
+        }
+
+        // ---------- 截图结果等即时反馈 ----------
+        ToastPill(toast, bottomPadding = 164.dp)
 
         // ---------- 顶部：状态 + HUD —— 【常驻，不参与淡出】 ----------
         Box(Modifier.align(Alignment.TopStart)) {
@@ -383,6 +448,8 @@ private fun LiveviewScreen(vm: CameraViewModel) {
                     canSelfTimer = camInfo.canSelfTimer,
                     selfTimer = camInfo.selfTimer,
                     vertical = true,
+                    assistActive = assist.anyActive || assistOpen,
+                    onAssist = { assistOpen = !assistOpen },
                     onScale = { vm.cycleScaleMode(); tick++ },
                     onSelfTimer = { vm.cycleSelfTimer(); tick++ },
                     onSharpen = { vm.cycleSharpen(); tick++ },
@@ -478,6 +545,8 @@ private fun LiveviewScreen(vm: CameraViewModel) {
                             canSelfTimer = camInfo.canSelfTimer,
                             selfTimer = camInfo.selfTimer,
                             vertical = false,
+                            assistActive = assist.anyActive || assistOpen,
+                            onAssist = { assistOpen = !assistOpen },
                             onScale = { vm.cycleScaleMode(); tick++ },
                             onSelfTimer = { vm.cycleSelfTimer(); tick++ },
                             onSharpen = { vm.cycleSharpen(); tick++ },
@@ -625,6 +694,8 @@ private fun ControlChips(
     canSelfTimer: Boolean,
     selfTimer: Int,
     vertical: Boolean,
+    assistActive: Boolean,
+    onAssist: () -> Unit,
     onScale: () -> Unit,
     onSelfTimer: () -> Unit,
     onSharpen: () -> Unit,
@@ -636,15 +707,17 @@ private fun ControlChips(
         SharpenLevel.STRONG -> "预览锐化 强"
     }
     val timerLabel = "定时 " + selfTimer + "s"
+    val assistLabel = if (assistActive) "辅助 ●" else "辅助"
 
     if (vertical) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Chip(text = assistLabel, active = assistActive, onClick = onAssist)
             Chip(text = scaleLabel, onClick = onScale)
             if (canSelfTimer) Chip(text = timerLabel, active = selfTimer > 0, onClick = onSelfTimer)
             Chip(text = sharpenLabel, onClick = onSharpen)
         }
     } else {
-        // FlowRow：窄屏（360dp 以下）放不下三个胶囊时自动换到第二行，
+        // FlowRow：窄屏（360dp 以下）放不下四个胶囊时自动换到第二行，
         // 而不是溢出到屏幕外。Row 做不到这件事。
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -652,6 +725,7 @@ private fun ControlChips(
             itemVerticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth(),
         ) {
+            Chip(text = assistLabel, active = assistActive, onClick = onAssist)
             Chip(text = scaleLabel, onClick = onScale)
             if (canSelfTimer) {
                 Chip(text = timerLabel, active = selfTimer > 0, onClick = onSelfTimer)

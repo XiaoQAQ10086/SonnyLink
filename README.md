@@ -1,5 +1,10 @@
 # SonnyLink
 
+> **这是 [XiaoQAQ10086/SonnyLink](https://github.com/XiaoQAQ10086/SonnyLink) 的派生版本（1.2.0 改版）。**
+> 原作者：[@XiaoQAQ10086](https://github.com/XiaoQAQ10086)，遵循原项目 MIT 协议。
+> 本次新增的监看辅助、NAS 自动归档、工具链升级等改动，完整说明见 [CHANGES-1.2.0.md](CHANGES-1.2.0.md)。
+> 与索尼公司无任何关联，未获授权或认可。
+
 > 用 Android 手机通过 Wi-Fi 遥控老款索尼相机：实时取景 + 遥控拍摄 + 浏览下载卡内照片。
 >
 > **轻量、低延迟、省电。** 专为 PMCA 时代（2015 前后）的索尼微单/黑卡设计。
@@ -237,3 +242,20 @@ app/
 
 - 协议参考：[Sony Camera Remote API beta](https://developer.sony.com/) 公开文档
 - 部分行为通过抓包与官方 App 对照验证
+
+---
+
+## 关于本派生版本（fork）
+
+本仓库是 [XiaoQAQ10086/SonnyLink](https://github.com/XiaoQAQ10086/SonnyLink) 的派生版本，**不是上游官方发布**，
+也未获上游作者背书。原项目作者为 **[@XiaoQAQ10086](https://github.com/XiaoQAQ10086)**，
+本派生版本的全部基础代码（协议层、取景解析、DLNA、渲染管线、界面骨架）都来自该仓库。
+
+- **改动内容**：监看辅助（峰值对焦 / 构图网格 / 直方图 / 数码变焦 / 截图）、NAS 自动归档（WebDAV）、
+  工具链升级。逐条说明见 [CHANGES-1.2.0.md](CHANGES-1.2.0.md)。
+- **许可**：与上游保持一致，采用 [MIT](LICENSE)。上游的版权声明（`Copyright (c) 2026 SonnyLink contributors`）
+  在 [LICENSE](LICENSE) 中**原样保留、未做任何修改**；本派生版本的修改部分同样以 MIT 发布。
+- **署名方式**：保留上游 `LICENSE` 全文、在 `README.md` 与 `CHANGES-1.2.0.md` 顶部标注来源、
+  在 [NOTICE](NOTICE) 中记录派生关系，并在 Git 历史中保留上游提交（本仓库的提交直接叠在 `1833891 fix: 1.1.4` 之上）。
+- **上游贡献方式**（原文保留）：欢迎向上游提交 Issue 和 PR；如果验证了其他机型，欢迎补充 `docs/camera-profiles/`。
+

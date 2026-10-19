@@ -179,13 +179,15 @@ class GalleryRepository(private val context: Context) {
         url: String,
         treeUri: String?,
         onProgress: (Long, Long) -> Unit,
+        /** 保存成功后的 Uri（供自动归档入队用）；失败为 null。 */
+        onSaved: (Uri?) -> Unit = {},
     ): Long = withContext(Dispatchers.IO) {
         val c = client ?: return@withContext -1L
         note("下载 " + item.title + " -> " + (if (item.downloadIsOriginal) "原图" else "预览图"))
         if (treeUri != null) {
-            return@withContext downloadToTree(c, item, url, Uri.parse(treeUri), onProgress)
+            return@withContext downloadToTree(c, item, url, Uri.parse(treeUri), onProgress, onSaved)
         }
-        return@withContext downloadToMediaStore(c, item, url, onProgress)
+        return@withContext downloadToMediaStore(c, item, url, onProgress, onSaved)
     }
 
     /**
@@ -200,6 +202,7 @@ class GalleryRepository(private val context: Context) {
         url: String,
         tree: Uri,
         onProgress: (Long, Long) -> Unit,
+        onSaved: (Uri?) -> Unit,
     ): Long {
         val resolver = context.contentResolver
         val mime = if (item.isVideo) "video/mp4" else "image/jpeg"
@@ -219,6 +222,7 @@ class GalleryRepository(private val context: Context) {
                 try { resolver.delete(fileUri, null, null) } catch (e: Exception) { }
                 -1L
             } else {
+                onSaved(fileUri)
                 written
             }
         } catch (e: Exception) {
@@ -269,6 +273,7 @@ class GalleryRepository(private val context: Context) {
         item: DlnaItem,
         url: String,
         onProgress: (Long, Long) -> Unit,
+        onSaved: (Uri?) -> Unit,
     ): Long {
         val resolver = context.contentResolver
         val isVideo = item.isVideo
@@ -298,6 +303,7 @@ class GalleryRepository(private val context: Context) {
             values.clear()
             values.put(MediaStore.MediaColumns.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
+            onSaved(uri)
             written
         } catch (e: Exception) {
             Log.w(TAG, "保存失败: " + e.message)

@@ -7,10 +7,15 @@ import android.net.Network
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonnyapp.camera.CameraRepository
+import com.sonnyapp.capture.ScreenshotSaver
 import com.sonnyapp.diag.Diagnostics
+import com.sonnyapp.liveview.AssistState
+import com.sonnyapp.liveview.GridMode
 import com.sonnyapp.liveview.LiveviewEngine
 import com.sonnyapp.liveview.LiveviewRenderer
 import com.sonnyapp.liveview.LiveviewScaleMode
+import com.sonnyapp.liveview.PeakingColor
+import com.sonnyapp.liveview.PeakingLevel
 import com.sonnyapp.liveview.SharpenLevel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -35,6 +40,9 @@ data class CameraStats(
     val imgTop: Float = 0f,
     val imgRight: Float = 1f,
     val imgBottom: Float = 1f,
+    /** 亮度直方图（256 档）；未开启辅助时为空数组 */
+    val histogram: IntArray = IntArray(0),
+    val histPeak: Int = 0,
 )
 
 /**
@@ -155,6 +163,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     val sharpen: StateFlow<SharpenLevel> = _sharpen.asStateFlow()
     private val _camInfo = MutableStateFlow(CameraInfo())
     val camInfo: StateFlow<CameraInfo> = _camInfo.asStateFlow()
+    private val _assist = MutableStateFlow(AssistState())
+    val assist: StateFlow<AssistState> = _assist.asStateFlow()
+
+    /** 截图/辅助操作的即时反馈（几秒后自动清空）。 */
+    private val _toast = MutableStateFlow("")
+    val toast: StateFlow<String> = _toast.asStateFlow()
 
     val savedSsid: String get() = prefs.getString(KEY_SSID, "") ?: ""
     val savedPass: String get() = prefs.getString(KEY_PASS, "") ?: ""
@@ -162,6 +176,117 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     init {
         renderer.scaleMode = _scaleMode.value
         renderer.sharpen = _sharpen.value
+        // 辅助开关也恢复上次的值：用户调好的峰值颜色不该每次进 App 重设
+        applyAssist(readAssist())
+    }
+
+    // ------------------------------------------------------------ 监看辅助
+
+    private fun readAssist(): AssistState {
+        return AssistState(
+            grid = runCatching { GridMode.valueOf(prefs.getString(KEY_GRID, "")!!) }
+                .getOrDefault(GridMode.OFF),
+            peaking = runCatching { PeakingLevel.valueOf(prefs.getString(KEY_PEAK, "")!!) }
+                .getOrDefault(PeakingLevel.OFF),
+            peakColor = runCatching { PeakingColor.valueOf(prefs.getString(KEY_PEAK_COLOR, "")!!) }
+                .getOrDefault(PeakingColor.RED),
+            histogram = prefs.getBoolean(KEY_HISTOGRAM, false),
+        )
+    }
+
+    /**
+     * 唯一的写入口：状态、渲染器、引擎三处必须同时更新。
+     * 分开写迟早会出现「界面显示峰值已关，画面还在描边」这种无法解释的现象。
+     */
+    private fun applyAssist(s: AssistState) {
+        _assist.value = s
+        renderer.peaking = s.peaking
+        renderer.peakColor = s.peakColor
+        renderer.zoom = s.zoom
+        renderer.focusX = s.focusX
+        renderer.focusY = s.focusY
+        engine?.assistHistogram = s.histogram
+        renderer.requestRender()
+    }
+
+    fun cycleGrid() {
+        val s = _assist.value.cycleGrid()
+        applyAssist(s)
+        prefs.edit().putString(KEY_GRID, s.grid.name).apply()
+    }
+
+    fun cyclePeaking() {
+        val s = _assist.value.cyclePeaking()
+        applyAssist(s)
+        prefs.edit().putString(KEY_PEAK, s.peaking.name).apply()
+    }
+
+    fun setPeakColor(c: PeakingColor) {
+        applyAssist(_assist.value.copy(peakColor = c))
+        prefs.edit().putString(KEY_PEAK_COLOR, c.name).apply()
+    }
+
+    fun toggleHistogram() {
+        val s = _assist.value
+        applyAssist(s.copy(histogram = !s.histogram))
+        prefs.edit().putBoolean(KEY_HISTOGRAM, !s.histogram).apply()
+    }
+
+    fun resetZoom() {
+        val s = _assist.value
+        if (!s.isZoomed) return
+        applyAssist(s.copy(zoom = 1f, focusX = 0.5f, focusY = 0.5f))
+    }
+
+    /**
+     * 捏合/拖动变焦。
+     *
+     * 换算关系：变焦后画面里 1 个屏幕像素 = (1/zoom)/画面宽 的图像比例，
+     * 所以拖动 [panX] 像素对应焦点反向移动 panX * (1/zoom) / 画面宽。
+     * 用**画面宽**而不是 View 宽 —— 否则「适应」模式下左右黑边会让拖动手感变快。
+     */
+    fun applyZoomGesture(zoomDelta: Float, panX: Float, panY: Float, viewW: Int, viewH: Int) {
+        val s = _assist.value
+        val z = (s.zoom * zoomDelta).coerceIn(1f, MAX_ZOOM)
+        if (z <= 1.001f) {
+            if (s.isZoomed) applyAssist(s.copy(zoom = 1f, focusX = 0.5f, focusY = 0.5f))
+            return
+        }
+        val imgW = ((renderer.imageRight - renderer.imageLeft) * viewW).coerceAtLeast(1f)
+        val imgH = ((renderer.imageBottom - renderer.imageTop) * viewH).coerceAtLeast(1f)
+        val fx = (s.focusX - panX * (1f / z) / imgW).coerceIn(0f, 1f)
+        val fy = (s.focusY - panY * (1f / z) / imgH).coerceIn(0f, 1f)
+        applyAssist(s.copy(zoom = z, focusX = fx, focusY = fy))
+    }
+
+    /**
+     * 截取当前取景帧。存相册 Pictures/SonnyLink，结果通过 [toast] 显示。
+     */
+    fun captureLiveview() {
+        val e = engine
+        if (e == null) {
+            showToast("未连接，无法截图")
+            return
+        }
+        val w = e.width
+        val h = e.height
+        e.requestCapture { bytes ->
+            viewModelScope.launch {
+                val app = getApplication<Application>()
+                val r = withContext(Dispatchers.IO) {
+                    ScreenshotSaver.saveLiveviewJpeg(app, bytes, w, h)
+                }
+                showToast(r.message)
+            }
+        }
+    }
+
+    private fun showToast(msg: String) {
+        _toast.value = msg
+        viewModelScope.launch {
+            delay(2600)
+            if (_toast.value == msg) _toast.value = ""
+        }
     }
 
     private fun readSharpen(): SharpenLevel {
@@ -311,6 +436,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                     imgTop = renderer.imageTop,
                     imgRight = renderer.imageRight,
                     imgBottom = renderer.imageBottom,
+                    histogram = e.histogram,
+                    histPeak = e.histogramPeak,
                 )
                 val err = e.lastError
                 if (err != null) {
@@ -332,6 +459,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun startEngine(net: Network, url: String, watch: Boolean): LiveviewEngine {
         val e = LiveviewEngine(net, renderer)
+        e.assistHistogram = _assist.value.histogram
         e.start(viewModelScope, url)
         startStatsTicker(e)
         if (watch) startLiveviewWatchdog(e)
@@ -650,5 +778,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         private const val ERR_EV = "曝光补偿写入被相机拒绝（曝光模式 "
         private const val KEY_SCALE = "scaleMode"
         private const val KEY_SHARPEN = "sharpen"
+        private const val KEY_GRID = "assistGrid"
+        private const val KEY_PEAK = "assistPeaking"
+        private const val KEY_PEAK_COLOR = "assistPeakColor"
+        private const val KEY_HISTOGRAM = "assistHistogram"
+
+        /** 与 LiveviewRenderer.MAX_ZOOM 保持一致（那边是渲染上限，这边是手势上限） */
+        private const val MAX_ZOOM = 6f
     }
 }

@@ -6,7 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 
-enum class AppMode { MENU, REMOTE, GALLERY }
+enum class AppMode { MENU, REMOTE, GALLERY, BACKUP }
 
 /**
  * 顶层导航（只有三个页面，不需要导航库）。
@@ -22,8 +22,10 @@ fun AppRoot() {
         AppMode.MENU -> MenuScreen(
             onRemote = { mode = AppMode.REMOTE },
             onGallery = { mode = AppMode.GALLERY },
+            onBackup = { mode = AppMode.BACKUP },
         )
         AppMode.REMOTE -> CameraScreen(onBack = { mode = AppMode.MENU })
         AppMode.GALLERY -> GalleryScreen(onBack = { mode = AppMode.MENU })
+        AppMode.BACKUP -> BackupScreen(onBack = { mode = AppMode.MENU })
     }
 }
